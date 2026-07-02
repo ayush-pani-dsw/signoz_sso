@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"go.uber.org/zap"
 
@@ -132,22 +133,20 @@ func (ah *APIHandler) autoRedirectSAML(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	
-	sourceUrl := r.URL.Query().Get("source")
-	if sourceUrl == "" {
-		sourceUrl = constants.GetDefaultSiteURL()
-	}
-	escapedUrl, _ := url.QueryUnescape(sourceUrl)
-	siteUrl, err := url.Parse(escapedUrl)
+	// Use SIGNOZ_SITE_URL as the canonical redirect target.
+	// This env var already contains the full base URL including any
+	// subpath (e.g. https://host:31100/log-aggregator), making the
+	// redirect fully configurable without hardcoding paths.
+	siteUrl, err := url.Parse(constants.GetDefaultSiteURL())
 	if err != nil {
-		siteUrl, _ = url.Parse(constants.GetDefaultSiteURL())
+		zap.L().Error("[autoRedirectSAML] failed to parse SIGNOZ_SITE_URL", zap.Error(err))
+		http.Redirect(w, r, "/login?password=Y", http.StatusSeeOther)
+		return
 	}
 	
-	// Ensure the path includes /log-aggregator/login so the post-SAML
-	// redirect lands on the correct subpath for the React app
-	if siteUrl.Path == "" || siteUrl.Path == "/" {
-		siteUrl.Path = "/log-aggregator/login"
-	} else if siteUrl.Path == "/log-aggregator" || siteUrl.Path == "/log-aggregator/" {
-		siteUrl.Path = "/log-aggregator/login"
+	// Ensure the path ends with /login for the React app to handle the JWT callback
+	if !strings.HasSuffix(siteUrl.Path, "/login") {
+		siteUrl.Path = strings.TrimSuffix(siteUrl.Path, "/") + "/login"
 	}
 	
 	ssoUrl, err := gettableDomain.BuildSsoUrl(siteUrl)
