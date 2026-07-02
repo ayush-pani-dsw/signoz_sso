@@ -21,7 +21,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o signoz cmd/enterprise/main.go
 # STAGE 2: Overlay onto your White-Labeled Image
 # ==========================================
 # IMPORTANT: Replace this base image with your actual white-labeled image name and tag
-FROM your-registry/signoz-whitelabel:latest
+FROM docker.io/signoz/signoz:v0.92.1
 
 # Overwrite the backend binary while preserving all custom frontend branding and assets
 COPY --from=backend-builder /app/signoz /root/signoz
