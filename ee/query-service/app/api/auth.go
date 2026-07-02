@@ -61,6 +61,7 @@ func (ah *APIHandler) receiveSAML(w http.ResponseWriter, r *http.Request) {
 		handleSsoError(w, r, redirectUri)
 		return
 	}
+	_ = orgID
 
 	// Bypassed license check for self-hosted deployment
 	// _, err = ah.Signoz.Licensing.GetActive(ctx, orgID)
