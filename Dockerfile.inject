@@ -3,7 +3,7 @@
 # ==========================================
 FROM golang:1.23-alpine AS backend-builder
 WORKDIR /app
-RUN apk add --no-cache git
+RUN apk add --no-cache git gcc musl-dev
 
 # Copy dependency configs and download modules
 COPY go.mod go.sum ./
@@ -15,7 +15,7 @@ COPY pkg/ ./pkg
 COPY ee/ ./ee
 
 # Compile static Go binary
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o signoz cmd/enterprise/main.go cmd/enterprise/server.go
+RUN CGO_ENABLED=1 GOOS=linux go build -trimpath -o signoz cmd/enterprise/main.go cmd/enterprise/server.go
 
 # ==========================================
 # STAGE 2: Overlay onto your White-Labeled Image

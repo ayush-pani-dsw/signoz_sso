@@ -94,6 +94,7 @@ func (ah *APIHandler) RegisterRoutes(router *mux.Router, am *middleware.AuthZ) {
 
 	// paid plans specific routes
 	router.HandleFunc("/api/v1/complete/saml", am.OpenAccess(ah.receiveSAML)).Methods(http.MethodPost)
+	router.HandleFunc("/api/v1/auth/sso/auto-redirect", am.OpenAccess(ah.autoRedirectSAML)).Methods(http.MethodGet)
 
 	// base overrides
 	router.HandleFunc("/api/v1/version", am.OpenAccess(ah.getVersion)).Methods(http.MethodGet)

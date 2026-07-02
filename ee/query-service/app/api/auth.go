@@ -1,6 +1,7 @@
 package api
 
 import (
+	"github.com/SigNoz/signoz/pkg/types"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -106,4 +107,47 @@ func (ah *APIHandler) receiveSAML(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, nextPage, http.StatusSeeOther)
+}
+
+func (ah *APIHandler) autoRedirectSAML(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	
+	// Query the first SSO-enabled domain
+	var stored []types.StorableOrgDomain
+	err := ah.Signoz.SQLStore.BunDB().NewSelect().
+		Model(&stored).
+		Limit(1).
+		Scan(ctx)
+		
+	if err != nil || len(stored) == 0 {
+		zap.L().Error("[autoRedirectSAML] failed to list domains or no domain found", zap.Error(err))
+		http.Redirect(w, r, "/login?password=Y", http.StatusSeeOther)
+		return
+	}
+	
+	gettableDomain := &types.GettableOrgDomain{StorableOrgDomain: stored[0]}
+	if err := gettableDomain.LoadConfig(stored[0].Data); err != nil || !gettableDomain.SsoEnabled {
+		zap.L().Error("[autoRedirectSAML] domain SSO not enabled or failed to load config")
+		http.Redirect(w, r, "/login?password=Y", http.StatusSeeOther)
+		return
+	}
+	
+	sourceUrl := r.URL.Query().Get("source")
+	if sourceUrl == "" {
+		sourceUrl = constants.GetDefaultSiteURL()
+	}
+	escapedUrl, _ := url.QueryUnescape(sourceUrl)
+	siteUrl, err := url.Parse(escapedUrl)
+	if err != nil {
+		siteUrl, _ = url.Parse(constants.GetDefaultSiteURL())
+	}
+	
+	ssoUrl, err := gettableDomain.BuildSsoUrl(siteUrl)
+	if err != nil {
+		zap.L().Error("[autoRedirectSAML] failed to build SSO URL", zap.Error(err))
+		http.Redirect(w, r, "/login?password=Y", http.StatusSeeOther)
+		return
+	}
+	
+	http.Redirect(w, r, ssoUrl, http.StatusSeeOther)
 }
