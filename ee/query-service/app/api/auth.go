@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 
 	"go.uber.org/zap"
@@ -113,34 +114,48 @@ func (ah *APIHandler) receiveSAML(w http.ResponseWriter, r *http.Request) {
 func (ah *APIHandler) autoRedirectSAML(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	
+	// Get site URL first, fallback to SIGNOZ_SAML_RETURN_URL if SIGNOZ_SITE_URL is not set
+	siteURLStr := os.Getenv("SIGNOZ_SITE_URL")
+	if siteURLStr == "" || siteURLStr == "0.0.0.0:8080" {
+		samlReturnURL := os.Getenv("SIGNOZ_SAML_RETURN_URL")
+		if samlReturnURL != "" {
+			siteURLStr = strings.Split(samlReturnURL, "/api/v1/complete/saml")[0]
+		}
+	}
+	if siteURLStr == "" {
+		siteURLStr = constants.GetDefaultSiteURL()
+	}
+	
+	siteUrl, err := url.Parse(siteURLStr)
+	if err != nil {
+		zap.L().Error("[autoRedirectSAML] failed to parse site URL", zap.Error(err))
+		http.Redirect(w, r, "/log-aggregator/login?password=Y", http.StatusSeeOther)
+		return
+	}
+	
+	// Ensure the path ends with /login for fallback
+	fallbackPath := siteUrl.Scheme + "://" + siteUrl.Host + siteUrl.Path
+	if !strings.HasSuffix(fallbackPath, "/login") {
+		fallbackPath = strings.TrimSuffix(fallbackPath, "/") + "/login"
+	}
+	
 	// Query the first SSO-enabled domain
 	var stored []types.StorableOrgDomain
-	err := ah.Signoz.SQLStore.BunDB().NewSelect().
+	err = ah.Signoz.SQLStore.BunDB().NewSelect().
 		Model(&stored).
 		Limit(1).
 		Scan(ctx)
 		
 	if err != nil || len(stored) == 0 {
 		zap.L().Error("[autoRedirectSAML] failed to list domains or no domain found", zap.Error(err))
-		http.Redirect(w, r, "/login?password=Y", http.StatusSeeOther)
+		http.Redirect(w, r, fallbackPath+"?password=Y", http.StatusSeeOther)
 		return
 	}
 	
 	gettableDomain := &types.GettableOrgDomain{StorableOrgDomain: stored[0]}
 	if err := gettableDomain.LoadConfig(stored[0].Data); err != nil || !gettableDomain.SsoEnabled {
 		zap.L().Error("[autoRedirectSAML] domain SSO not enabled or failed to load config")
-		http.Redirect(w, r, "/login?password=Y", http.StatusSeeOther)
-		return
-	}
-	
-	// Use SIGNOZ_SITE_URL as the canonical redirect target.
-	// This env var already contains the full base URL including any
-	// subpath (e.g. https://host:31100/log-aggregator), making the
-	// redirect fully configurable without hardcoding paths.
-	siteUrl, err := url.Parse(constants.GetDefaultSiteURL())
-	if err != nil {
-		zap.L().Error("[autoRedirectSAML] failed to parse SIGNOZ_SITE_URL", zap.Error(err))
-		http.Redirect(w, r, "/login?password=Y", http.StatusSeeOther)
+		http.Redirect(w, r, fallbackPath+"?password=Y", http.StatusSeeOther)
 		return
 	}
 	
@@ -152,7 +167,7 @@ func (ah *APIHandler) autoRedirectSAML(w http.ResponseWriter, r *http.Request) {
 	ssoUrl, err := gettableDomain.BuildSsoUrl(siteUrl)
 	if err != nil {
 		zap.L().Error("[autoRedirectSAML] failed to build SSO URL", zap.Error(err))
-		http.Redirect(w, r, "/login?password=Y", http.StatusSeeOther)
+		http.Redirect(w, r, fallbackPath+"?password=Y", http.StatusSeeOther)
 		return
 	}
 	
