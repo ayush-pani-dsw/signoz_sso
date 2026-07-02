@@ -1,0 +1,27 @@
+# ==========================================
+# STAGE 1: Compile the modified Go Backend
+# ==========================================
+FROM golang:1.23-alpine AS backend-builder
+WORKDIR /app
+RUN apk add --no-cache git
+
+# Copy dependency configs and download modules
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy backend source code files
+COPY cmd/ ./cmd
+COPY pkg/ ./pkg
+COPY ee/ ./ee
+
+# Compile static Go binary
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o signoz cmd/enterprise/main.go cmd/enterprise/server.go
+
+# ==========================================
+# STAGE 2: Overlay onto your White-Labeled Image
+# ==========================================
+# IMPORTANT: Replace this base image with your actual white-labeled image name and tag
+FROM your-registry/signoz-whitelabel:latest
+
+# Overwrite the backend binary while preserving all custom frontend branding and assets
+COPY --from=backend-builder /app/signoz /root/signoz
