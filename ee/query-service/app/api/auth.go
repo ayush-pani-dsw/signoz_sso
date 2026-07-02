@@ -142,6 +142,14 @@ func (ah *APIHandler) autoRedirectSAML(w http.ResponseWriter, r *http.Request) {
 		siteUrl, _ = url.Parse(constants.GetDefaultSiteURL())
 	}
 	
+	// Ensure the path includes /log-aggregator/login so the post-SAML
+	// redirect lands on the correct subpath for the React app
+	if siteUrl.Path == "" || siteUrl.Path == "/" {
+		siteUrl.Path = "/log-aggregator/login"
+	} else if siteUrl.Path == "/log-aggregator" || siteUrl.Path == "/log-aggregator/" {
+		siteUrl.Path = "/log-aggregator/login"
+	}
+	
 	ssoUrl, err := gettableDomain.BuildSsoUrl(siteUrl)
 	if err != nil {
 		zap.L().Error("[autoRedirectSAML] failed to build SSO URL", zap.Error(err))
