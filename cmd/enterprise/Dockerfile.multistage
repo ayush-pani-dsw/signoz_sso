@@ -1,0 +1,54 @@
+# ==========================================
+# STAGE 1: Build the React Frontend
+# ==========================================
+FROM node:18-alpine AS frontend-builder
+WORKDIR /app/frontend
+
+# Copy frontend build requirements
+COPY frontend/package.json frontend/yarn.lock frontend/.yarnrc ./
+RUN yarn install --frozen-lockfile
+
+# Copy source and build
+COPY frontend/ ./
+RUN CI=1 yarn build
+
+# ==========================================
+# STAGE 2: Build the Go Backend
+# ==========================================
+FROM golang:1.23-alpine AS backend-builder
+WORKDIR /app
+
+# Install git for dependency download
+RUN apk add --no-cache git
+
+# Copy dependency configuration
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code files
+COPY cmd/ ./cmd
+COPY pkg/ ./pkg
+COPY ee/ ./ee
+
+# Compile static Linux binary
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -o signoz cmd/enterprise/main.go cmd/enterprise/server.go
+
+# ==========================================
+# STAGE 3: Final Runner Image
+# ==========================================
+FROM alpine:3.20.3
+LABEL maintainer="signoz"
+WORKDIR /root
+
+# Install ca-certificates for outbound secure communication (like OIDC/Keycloak)
+RUN apk update && \
+	apk add --no-cache ca-certificates
+
+# Copy artifacts from builders
+COPY --from=backend-builder /app/signoz /root/signoz
+COPY --from=frontend-builder /app/frontend/build /etc/signoz/web
+COPY templates/email /root/templates
+
+RUN chmod 755 /root /root/signoz
+
+ENTRYPOINT ["./signoz", "server"]
