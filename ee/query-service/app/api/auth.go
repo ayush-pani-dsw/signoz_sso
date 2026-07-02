@@ -47,7 +47,7 @@ func (ah *APIHandler) receiveSAML(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// upgrade redirect url from the relay state for better accuracy
-	redirectUri = fmt.Sprintf("%s://%s%s", parsedState.Scheme, parsedState.Host, "/login")
+	redirectUri = fmt.Sprintf("%s://%s%s", parsedState.Scheme, parsedState.Host, parsedState.Path)
 
 	// fetch domain by parsing relay state.
 	domain, err := ah.Signoz.Modules.User.GetDomainFromSsoResponse(ctx, parsedState)
