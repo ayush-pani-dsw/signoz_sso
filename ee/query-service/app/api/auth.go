@@ -1,18 +1,24 @@
 package api
 
 import (
-	"github.com/SigNoz/signoz/pkg/types"
+	"bytes"
+	"compress/flate"
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/SigNoz/signoz/pkg/query-service/constants"
+	"github.com/SigNoz/signoz/pkg/types"
 	"github.com/SigNoz/signoz/pkg/valuer"
 )
 
@@ -34,6 +40,13 @@ func (ah *APIHandler) receiveSAML(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		zap.L().Error("[receiveSAML] failed to process response - invalid response from IDP", zap.Error(err), zap.Any("request", r))
 		handleSsoError(w, r, redirectUri)
+		return
+	}
+
+	// Check if this is an incoming SAML Single Logout Request (SLO) from Keycloak
+	samlRequest := r.FormValue("SAMLRequest")
+	if samlRequest != "" {
+		ah.handleSamlLogoutRequest(w, r, samlRequest)
 		return
 	}
 
@@ -173,3 +186,144 @@ func (ah *APIHandler) autoRedirectSAML(w http.ResponseWriter, r *http.Request) {
 	
 	http.Redirect(w, r, ssoUrl, http.StatusSeeOther)
 }
+
+func (ah *APIHandler) ssoLogout(w http.ResponseWriter, r *http.Request) {
+	issuerURL := os.Getenv("SIGNOZ_OIDC_ISSUER_URL")
+	clientID := os.Getenv("SIGNOZ_OIDC_CLIENT_ID")
+	
+	// Determine the post-logout redirect URI dynamically using SAML Return URL or Site URL
+	siteURLStr := os.Getenv("SIGNOZ_SITE_URL")
+	if siteURLStr == "" || siteURLStr == "0.0.0.0:8080" {
+		samlReturnURL := os.Getenv("SIGNOZ_SAML_RETURN_URL")
+		if samlReturnURL != "" {
+			siteURLStr = strings.Split(samlReturnURL, "/api/v1/complete/saml")[0]
+		}
+	}
+	if siteURLStr == "" {
+		siteURLStr = constants.GetDefaultSiteURL()
+	}
+	
+	redirectURI := "/login"
+	if parsedSiteURL, err := url.Parse(siteURLStr); err == nil {
+		if !strings.HasSuffix(parsedSiteURL.Path, "/login") {
+			parsedSiteURL.Path = strings.TrimSuffix(parsedSiteURL.Path, "/") + "/login"
+		}
+		redirectURI = parsedSiteURL.String()
+	}
+
+	if issuerURL == "" || clientID == "" {
+		// Fallback to normal login page if not configured
+		http.Redirect(w, r, redirectURI, http.StatusSeeOther)
+		return
+	}
+	
+	// Build the OIDC single logout URL for Keycloak
+	logoutURL := fmt.Sprintf("%s/protocol/openid-connect/logout?post_logout_redirect_uri=%s&client_id=%s",
+		strings.TrimSuffix(issuerURL, "/"),
+		url.QueryEscape(redirectURI),
+		url.QueryEscape(clientID),
+	)
+	
+	http.Redirect(w, r, logoutURL, http.StatusSeeOther)
+}
+
+func (ah *APIHandler) handleSamlLogoutRequest(w http.ResponseWriter, r *http.Request, samlRequest string) {
+	issuerURL := os.Getenv("SIGNOZ_OIDC_ISSUER_URL")
+	if issuerURL == "" {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	
+	samlIdpURL := strings.TrimSuffix(issuerURL, "/")
+	if !strings.HasSuffix(samlIdpURL, "/protocol/saml") {
+		samlIdpURL = strings.Replace(samlIdpURL, "/protocol/openid-connect", "/protocol/saml", 1)
+		if !strings.Contains(samlIdpURL, "/protocol/saml") {
+			samlIdpURL = samlIdpURL + "/protocol/saml"
+		}
+	}
+	
+	requestID := getSAMLRequestID(samlRequest)
+	
+	clientID := os.Getenv("SIGNOZ_OIDC_CLIENT_ID")
+	if clientID == "" {
+		clientID = "signoz"
+	}
+	
+	logoutResponseXML := buildLogoutResponse(requestID, samlIdpURL, clientID)
+	encodedResponse := encodeSAMLResponse(logoutResponseXML)
+	
+	relayState := r.FormValue("RelayState")
+	
+	keycloakRedirectURL := fmt.Sprintf("%s?SAMLResponse=%s", samlIdpURL, url.QueryEscape(encodedResponse))
+	if relayState != "" {
+		keycloakRedirectURL = fmt.Sprintf("%s&RelayState=%s", keycloakRedirectURL, url.QueryEscape(relayState))
+	}
+	
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	html := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head>
+<script>
+  (function() {
+    localStorage.removeItem("AUTH_TOKEN");
+    localStorage.removeItem("IS_LOGGED_IN");
+    localStorage.removeItem("IS_IDENTIFIED_USER");
+    localStorage.removeItem("REFRESH_AUTH_TOKEN");
+    localStorage.removeItem("LOGGED_IN_USER_EMAIL");
+    localStorage.removeItem("LOGGED_IN_USER_NAME");
+    
+    window.location.href = %q;
+  })();
+</script>
+</head>
+<body>
+  <p>Logging out...</p>
+</body>
+</html>`, keycloakRedirectURL)
+
+	w.Write([]byte(html))
+}
+
+func getSAMLRequestID(samlRequest string) string {
+	data, err := base64.StdEncoding.DecodeString(samlRequest)
+	if err != nil {
+		return ""
+	}
+	
+	r := flate.NewReader(bytes.NewReader(data))
+	defer r.Close()
+	decompressed, err := io.ReadAll(r)
+	if err != nil {
+		decompressed = data
+	}
+	
+	re := regexp.MustCompile(`ID="([^"]+)"`)
+	matches := re.FindSubmatch(decompressed)
+	if len(matches) > 1 {
+		return string(matches[1])
+	}
+	
+	reSingle := regexp.MustCompile(`ID='([^']+)'`)
+	matchesSingle := reSingle.FindSubmatch(decompressed)
+	if len(matchesSingle) > 1 {
+		return string(matchesSingle[1])
+	}
+	
+	return ""
+}
+
+func buildLogoutResponse(inResponseTo, destination, issuer string) string {
+	id := "_" + uuid.New().String()
+	instant := time.Now().UTC().Format(time.RFC3339)
+	return fmt.Sprintf(`<samlp:LogoutResponse xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="%s" Version="2.0" IssueInstant="%s" Destination="%s" InResponseTo="%s"><saml:Issuer>%s</saml:Issuer><samlp:Status><samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/></samlp:Status></samlp:LogoutResponse>`,
+		id, instant, destination, inResponseTo, issuer)
+}
+
+func encodeSAMLResponse(xml string) string {
+	var buf bytes.Buffer
+	w, _ := flate.NewWriter(&buf, flate.BestCompression)
+	w.Write([]byte(xml))
+	w.Close()
+	return base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
