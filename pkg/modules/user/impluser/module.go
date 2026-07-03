@@ -476,6 +476,10 @@ func (m *Module) GetJWTForUser(ctx context.Context, user *types.User) (types.Get
 }
 
 func (m *Module) CreateUserForSAMLRequest(ctx context.Context, email string) (*types.User, error) {
+	return m.CreateUserForSAMLRequestWithRole(ctx, email, "VIEWER")
+}
+
+func (m *Module) CreateUserForSAMLRequestWithRole(ctx context.Context, email, role string) (*types.User, error) {
 	// get auth domain from email domain
 	_, err := m.GetAuthDomainByEmail(ctx, email)
 	if err != nil && !errors.Ast(err, errors.TypeNotFound) {
@@ -494,7 +498,12 @@ func (m *Module) CreateUserForSAMLRequest(ctx context.Context, email string) (*t
 		return nil, err
 	}
 
-	user, err := types.NewUser(name, email, types.RoleViewer.String(), defaultOrgID)
+	validRole := "VIEWER"
+	if role != "" {
+		validRole = strings.ToUpper(role)
+	}
+
+	user, err := types.NewUser(name, email, validRole, defaultOrgID)
 	if err != nil {
 		return nil, err
 	}
@@ -505,10 +514,13 @@ func (m *Module) CreateUserForSAMLRequest(ctx context.Context, email string) (*t
 	}
 
 	return user, nil
-
 }
 
 func (m *Module) PrepareSsoRedirect(ctx context.Context, redirectUri, email string) (string, error) {
+	return m.PrepareSsoRedirectWithRole(ctx, redirectUri, email, "VIEWER")
+}
+
+func (m *Module) PrepareSsoRedirectWithRole(ctx context.Context, redirectUri, email, role string) (string, error) {
 	users, err := m.GetUsersByEmail(ctx, email)
 	if err != nil {
 		m.settings.Logger().ErrorContext(ctx, "failed to get user with email received from auth provider", "error", err)
@@ -516,8 +528,13 @@ func (m *Module) PrepareSsoRedirect(ctx context.Context, redirectUri, email stri
 	}
 	user := &types.User{}
 
+	validRole := "VIEWER"
+	if role != "" {
+		validRole = strings.ToUpper(role)
+	}
+
 	if len(users) == 0 {
-		newUser, err := m.CreateUserForSAMLRequest(ctx, email)
+		newUser, err := m.CreateUserForSAMLRequestWithRole(ctx, email, validRole)
 		user = newUser
 		if err != nil {
 			m.settings.Logger().ErrorContext(ctx, "failed to create user with email received from auth provider", "error", err)
@@ -525,6 +542,14 @@ func (m *Module) PrepareSsoRedirect(ctx context.Context, redirectUri, email stri
 		}
 	} else {
 		user = &users[0].User
+		// If a role is provided from Keycloak SSO and is different from the current one, update it dynamically!
+		if validRole != "" && user.Role != validRole {
+			user.Role = validRole
+			_, err = m.store.UpdateUser(ctx, user.OrgID, user.ID.String(), user)
+			if err != nil {
+				m.settings.Logger().ErrorContext(ctx, "failed to update user role from SSO response", "error", err)
+			}
+		}
 	}
 
 	tokenStore, err := m.GetJWTForUser(ctx, user)

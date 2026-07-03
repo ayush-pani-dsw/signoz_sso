@@ -34,10 +34,12 @@ type Module interface {
 	GetAuthenticatedUser(ctx context.Context, orgID, email, password, refreshToken string) (*types.User, error)
 	GetJWTForUser(ctx context.Context, user *types.User) (types.GettableUserJwt, error)
 	CreateUserForSAMLRequest(ctx context.Context, email string) (*types.User, error)
+	CreateUserForSAMLRequestWithRole(ctx context.Context, email, role string) (*types.User, error)
 	LoginPrecheck(ctx context.Context, orgID, email, sourceUrl string) (*types.GettableLoginPrecheck, error)
 
 	// sso
 	PrepareSsoRedirect(ctx context.Context, redirectUri, email string) (string, error)
+	PrepareSsoRedirectWithRole(ctx context.Context, redirectUri, email, role string) (string, error)
 	CanUsePassword(ctx context.Context, email string) (bool, error)
 
 	// password

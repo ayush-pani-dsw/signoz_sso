@@ -114,7 +114,36 @@ func (ah *APIHandler) receiveSAML(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nextPage, err := ah.Signoz.Modules.User.PrepareSsoRedirect(ctx, redirectUri, email)
+	// Extract role dynamically from SAML assertion
+	samlRole := "VIEWER"
+	roleAttributes := []string{
+		"role", "Role", "roles", "Roles",
+		"http://schemas.microsoft.com/ws/2008/06/identity/claims/role",
+		"http://schemas.xmlsoap.org/ws/2005/05/identity/claims/role",
+	}
+	for _, attrName := range roleAttributes {
+		if attr, ok := assertionInfo.Values[attrName]; ok && len(attr.Values) > 0 {
+			samlRole = attr.Values[0].Value
+			break
+		}
+	}
+	
+	// Map Keycloak roles dynamically from environment variables (comma-separated lists)
+	adminRoles := getCommaSeparatedEnv("SIGNOZ_SSO_ADMIN_ROLES", []string{"admin", "administrator"})
+	editorRoles := getCommaSeparatedEnv("SIGNOZ_SSO_EDITOR_ROLES", []string{"editor", "developer", "data_scientist"})
+	
+	signozRole := "VIEWER"
+	samlRoleLower := strings.ToLower(samlRole)
+	
+	if contains(adminRoles, samlRoleLower) {
+		signozRole = "ADMIN"
+	} else if contains(editorRoles, samlRoleLower) {
+		signozRole = "EDITOR"
+	} else {
+		signozRole = "VIEWER"
+	}
+
+	nextPage, err := ah.Signoz.Modules.User.PrepareSsoRedirectWithRole(ctx, redirectUri, email, signozRole)
 	if err != nil {
 		zap.L().Error("[receiveSAML] failed to generate redirect URI after successful login ", zap.String("domain", domain.String()), zap.Error(err))
 		handleSsoError(w, r, redirectUri)
@@ -326,4 +355,30 @@ func encodeSAMLResponse(xml string) string {
 	w.Close()
 	return base64.StdEncoding.EncodeToString(buf.Bytes())
 }
+
+func getCommaSeparatedEnv(key string, defaults []string) []string {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaults
+	}
+	parts := strings.Split(val, ",")
+	var result []string
+	for _, p := range parts {
+		trimmed := strings.ToLower(strings.TrimSpace(p))
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
+
+func contains(arr []string, val string) bool {
+	for _, item := range arr {
+		if item == val {
+			return true
+		}
+	}
+	return false
+}
+
 
