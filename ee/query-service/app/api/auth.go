@@ -114,33 +114,31 @@ func (ah *APIHandler) receiveSAML(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Extract role dynamically from SAML assertion
-	samlRole := "VIEWER"
+	// Extract ALL roles from SAML assertion and find the highest-priority match
+	adminRoles := getCommaSeparatedEnv("SIGNOZ_SSO_ADMIN_ROLES", []string{"admin", "administrator"})
+	editorRoles := getCommaSeparatedEnv("SIGNOZ_SSO_EDITOR_ROLES", []string{"editor", "developer", "data_scientist"})
+
 	roleAttributes := []string{
 		"role", "Role", "roles", "Roles",
 		"http://schemas.microsoft.com/ws/2008/06/identity/claims/role",
 		"http://schemas.xmlsoap.org/ws/2005/05/identity/claims/role",
 	}
+
+	signozRole := "VIEWER"
 	for _, attrName := range roleAttributes {
 		if attr, ok := assertionInfo.Values[attrName]; ok && len(attr.Values) > 0 {
-			samlRole = attr.Values[0].Value
+			// Check ALL role values, not just the first one. Priority: ADMIN > EDITOR > VIEWER
+			for _, rv := range attr.Values {
+				rvLower := strings.ToLower(rv.Value)
+				if contains(adminRoles, rvLower) {
+					signozRole = "ADMIN"
+					break
+				} else if contains(editorRoles, rvLower) && signozRole != "ADMIN" {
+					signozRole = "EDITOR"
+				}
+			}
 			break
 		}
-	}
-	
-	// Map Keycloak roles dynamically from environment variables (comma-separated lists)
-	adminRoles := getCommaSeparatedEnv("SIGNOZ_SSO_ADMIN_ROLES", []string{"admin", "administrator"})
-	editorRoles := getCommaSeparatedEnv("SIGNOZ_SSO_EDITOR_ROLES", []string{"editor", "developer", "data_scientist"})
-	
-	signozRole := "VIEWER"
-	samlRoleLower := strings.ToLower(samlRole)
-	
-	if contains(adminRoles, samlRoleLower) {
-		signozRole = "ADMIN"
-	} else if contains(editorRoles, samlRoleLower) {
-		signozRole = "EDITOR"
-	} else {
-		signozRole = "VIEWER"
 	}
 
 	nextPage, err := ah.Signoz.Modules.User.PrepareSsoRedirectWithRole(ctx, redirectUri, email, signozRole)
